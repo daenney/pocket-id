@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,9 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/middleware"
 	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/utils/systemd"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
@@ -40,8 +44,18 @@ func initRouterInternal(ctx context.Context, db *gorm.DB, appConfigService *serv
 		gin.SetMode(gin.TestMode)
 	}
 
+	// Initialize trace and metric provider before the call to add the
+	// middleware.
+	shutdownOtel := initOtel(
+		ctx,
+		common.EnvConfig.MetricsEnabled,
+		common.EnvConfig.TracingEnabled,
+	)
+	defer shutdownOtel()
+
 	r := gin.Default()
 	r.Use(gin.Logger())
+	r.Use(otelgin.Middleware("pocket-id-backend"))
 
 	// Initialize services
 	emailService, err := service.NewEmailService(appConfigService, db)
@@ -95,6 +109,17 @@ func initRouterInternal(ctx context.Context, db *gorm.DB, appConfigService *serv
 	// Initialize middleware for specific routes
 	authMiddleware := middleware.NewAuthMiddleware(apiKeyService, userService, jwtService)
 	fileSizeLimitMiddleware := middleware.NewFileSizeLimitMiddleware()
+
+	// Set up /metrics route for Prometheus
+
+	if common.EnvConfig.MetricsEnabled && os.Getenv("OTEL_METRICS_EXPORTER") == "prometheus" {
+		r.GET("/metrics", authMiddleware.WithAdminNotRequired().Add(), func(c *gin.Context) {
+			promhttp.InstrumentMetricHandler(
+				prometheus.DefaultRegisterer,
+				promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}),
+			).ServeHTTP(c.Writer, c.Request)
+		})
+	}
 
 	// Set up API routes
 	apiGroup := r.Group("/api")
