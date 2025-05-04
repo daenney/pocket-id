@@ -25,7 +25,7 @@ func Bootstrap() error {
 	migrateKey()
 
 	// Initialize the tracer and metrics exporter
-	shutdownFns, err := initOtel(ctx, common.EnvConfig.MetricsEnabled, common.EnvConfig.TracingEnabled)
+	shutdownFns, httpClient, err := initOtel(ctx, common.EnvConfig.MetricsEnabled, common.EnvConfig.TracingEnabled)
 	if err != nil {
 		return fmt.Errorf("failed to initialize OpenTelemetry: %w", err)
 	}
@@ -34,7 +34,7 @@ func Bootstrap() error {
 	db := newDatabase()
 
 	// Create all services
-	svc, err := initServices(ctx, db)
+	svc, err := initServices(ctx, db, httpClient)
 	if err != nil {
 		return fmt.Errorf("failed to initialize services: %w", err)
 	}

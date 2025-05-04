@@ -3,11 +3,13 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	"go.opentelemetry.io/contrib/exporters/autoexport"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
@@ -28,18 +30,26 @@ func defaultResource() (*resource.Resource, error) {
 	)
 }
 
-func initOtel(ctx context.Context, metrics, traces bool) (shutdownFns []utils.Service, err error) {
+func initOtel(ctx context.Context, metrics, traces bool) (shutdownFns []utils.Service, httpClient *http.Client, err error) {
 	resource, err := defaultResource()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OpenTelemetry resource: %w", err)
+		return nil, nil, fmt.Errorf("failed to create OpenTelemetry resource: %w", err)
 	}
 
 	shutdownFns = make([]utils.Service, 0, 2)
 
+	httpClient = &http.Client{}
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		// Indicates a development-time error
+		panic("Default transport is not of type *http.Transport")
+	}
+	httpClient.Transport = defaultTransport.Clone()
+
 	if traces {
 		tr, err := autoexport.NewSpanExporter(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize OpenTelemetry span exporter: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize OpenTelemetry span exporter: %w", err)
 		}
 		tp := sdktrace.NewTracerProvider(
 			sdktrace.WithResource(resource),
@@ -63,6 +73,8 @@ func initOtel(ctx context.Context, metrics, traces bool) (shutdownFns []utils.Se
 			}
 			return nil
 		})
+
+		httpClient.Transport = otelhttp.NewTransport(httpClient.Transport)
 	} else {
 		otel.SetTracerProvider(tracenoop.NewTracerProvider())
 	}
@@ -70,7 +82,7 @@ func initOtel(ctx context.Context, metrics, traces bool) (shutdownFns []utils.Se
 	if metrics {
 		mr, err := autoexport.NewMetricReader(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize OpenTelemetry metric reader: %w", err)
+			return nil, nil, fmt.Errorf("failed to initialize OpenTelemetry metric reader: %w", err)
 		}
 		mp := metric.NewMeterProvider(
 			metric.WithResource(resource),
@@ -91,5 +103,5 @@ func initOtel(ctx context.Context, metrics, traces bool) (shutdownFns []utils.Se
 		otel.SetMeterProvider(metricnoop.NewMeterProvider())
 	}
 
-	return shutdownFns, nil
+	return shutdownFns, httpClient, nil
 }
